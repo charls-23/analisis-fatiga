@@ -153,31 +153,12 @@ summary{cursor:pointer;font-weight:700;color:var(--accent)}
 
     <section class="card full">
       <h2>Gráfica de lugares geométricos</h2>
-      <p class="help">σm en el eje horizontal y σa en el eje vertical, usando el valor de nd indicado arriba.</p>
+      <p class="help">σm en el eje horizontal y σa en el eje vertical. Cada curva se evalúa directamente desde su ecuación usando el valor de nd indicado arriba.</p>
       <div class="chart-wrap">
         <svg id="chart" viewBox="0 0 820 480" role="img" aria-label="Gráfica de lugares geométricos de fatiga"></svg>
       </div>
       <div class="legend" id="legend"></div>
-
-      <details>
-        <summary>Ver tabla de lugares geométricos</summary>
-        <div class="table-scroll">
-          <table class="data-table">
-            <thead>
-              <tr>
-                <th>σm (MPa)</th>
-                <th>Soderberg</th>
-                <th>Goodman Mod</th>
-                <th>Gerber</th>
-                <th>ASME Elíptica</th>
-                <th>Recta de Langer</th>
-                <th>Línea de carga</th>
-              </tr>
-            </thead>
-            <tbody id="geoBody"></tbody>
-          </table>
-        </div>
-      </details>
+      <div class="note">Las curvas se generan directamente a partir de sus ecuaciones; no se usa una tabla de puntos como fuente de la gráfica.</div>
     </section>
   </main>
 </div>
@@ -205,12 +186,12 @@ summary{cursor:pointer;font-weight:700;color:var(--accent)}
 
   function validate(v){
     if(Object.values(v).some(x => !Number.isFinite(x))) return "Todos los campos deben contener números.";
-    if(v.sy === 0 || v.su === 0 || v.nd === 0) return "Sy, Su y nd deben ser distintos de cero.";
+    if(v.sy <= 0 || v.su <= 0 || v.nd <= 0) return "Sy, Su y nd deben ser mayores que cero.";
     return "";
   }
 
   function safeDiv(a,b){
-    return b === 0 ? NaN : a/b;
+    return Math.abs(b) < 1e-12 ? NaN : a/b;
   }
 
   function calculate(){
@@ -233,9 +214,11 @@ summary{cursor:pointer;font-weight:700;color:var(--accent)}
     const nGood = safeDiv(1, safeDiv(sa,sep) + safeDiv(sm,v.su));
 
     let nGer = NaN;
-    if(sm !== 0 && sa !== 0 && sep !== 0 && v.su !== 0){
+    if(Math.abs(sm) > 1e-12 && Math.abs(sa) > 1e-12 && sep !== 0){
       nGer = 0.5*Math.pow(v.su/sm,2)*(sa/sep)*
         (-1 + Math.sqrt(1 + Math.pow((2*sm*sep)/(v.su*sa),2)));
+    } else if (Math.abs(sm) <= 1e-12 && Math.abs(sa) > 1e-12) {
+      nGer = sep/sa;
     }
 
     const nAsme = Math.sqrt(safeDiv(1,
@@ -249,65 +232,83 @@ summary{cursor:pointer;font-weight:700;color:var(--accent)}
     $("nAsme").textContent = fmt(nAsme);
     $("nLang").textContent = fmt(nLang);
 
-    const rows = [];
-    for(let x=0; x<=150; x+=5){
-      const soderberg = x <= 100 ? ((1/v.nd) - (x/v.sy))*sep : null;
-      const goodman = ((1/v.nd) - (x/v.su))*sep;
-      const gerber = (1 - Math.pow((v.nd*x)/v.su,2))*(sep/v.nd);
-      const asmeInside = (1 - Math.pow((v.nd*x)/v.sy,2))*Math.pow(sep/v.nd,2);
-      const asme = x <= 100 && asmeInside >= 0 ? Math.sqrt(asmeInside) : null;
-      const langer = x <= 100 ? (v.sy/v.nd)-x : null;
-      const load = sm === 0 ? null : (sa/sm)*x;
-
-      rows.push({
-        x,
-        values:[soderberg, goodman, gerber, asme, langer, load]
-      });
-    }
-    renderTable(rows);
-    renderChart(rows);
+    renderChart({ ...v, sa, sm, se, sep });
   }
 
-  function renderTable(rows){
-    $("geoBody").innerHTML = rows.map(r => {
-      const cells = r.values.map(v => `<td>${v === null || !Number.isFinite(v) ? "" : v.toFixed(3)}</td>`).join("");
-      return `<tr><td>${r.x}</td>${cells}</tr>`;
-    }).join("");
-  }
-
-  function renderChart(rows){
+  function renderChart(p){
     const svg = $("chart");
     const W=820,H=480,L=70,R=22,T=24,B=58;
     const plotW=W-L-R, plotH=H-T-B;
 
-    const ys = [];
-    rows.forEach(r => r.values.forEach(v => {
-      if(v !== null && Number.isFinite(v)) ys.push(v);
-    }));
-    if(!ys.length){ svg.innerHTML=""; return; }
+    // Natural positive-domain intercepts of the equations.
+    const xSy = p.sy / p.nd;
+    const xSu = p.su / p.nd;
+    const xmax = Math.max(xSy, xSu) * 1.08;
 
-    let ymin = Math.min(0, ...ys);
-    let ymax = Math.max(0, ...ys);
-    if(ymax === ymin){ ymax = ymin + 1; }
+    const functions = [
+      {
+        name:"Soderberg", color:seriesMeta[0][1], xmax:xSy,
+        fn:x => p.sep * (1/p.nd - x/p.sy)
+      },
+      {
+        name:"Goodman Mod", color:seriesMeta[1][1], xmax:xSu,
+        fn:x => p.sep * (1/p.nd - x/p.su)
+      },
+      {
+        name:"Gerber", color:seriesMeta[2][1], xmax:xSu,
+        fn:x => (p.sep/p.nd) * (1 - Math.pow((p.nd*x)/p.su,2))
+      },
+      {
+        name:"ASME Elíptica", color:seriesMeta[3][1], xmax:xSy,
+        fn:x => {
+          const inside = 1 - Math.pow((p.nd*x)/p.sy,2);
+          return inside < 0 ? NaN : (p.sep/p.nd)*Math.sqrt(inside);
+        }
+      },
+      {
+        name:"Recta de Langer", color:seriesMeta[4][1], xmax:xSy,
+        fn:x => p.sy/p.nd - x
+      },
+      {
+        name:"Línea de carga", color:seriesMeta[5][1], xmax:xmax,
+        dash:true,
+        fn:x => Math.abs(p.sm) < 1e-12 ? NaN : (p.sa/p.sm)*x
+      }
+    ];
+
+    // Determine y-range by evaluating the equations only for scaling.
+    const yvals = [0];
+    functions.forEach(s => {
+      const steps = 250;
+      for(let i=0;i<=steps;i++){
+        const x = s.xmax * i/steps;
+        const y = s.fn(x);
+        if(Number.isFinite(y)) yvals.push(y);
+      }
+    });
+
+    let ymin = Math.min(0, ...yvals);
+    let ymax = Math.max(0, ...yvals);
+    if(ymax === ymin) ymax = ymin + 1;
     const pad = (ymax-ymin)*0.08;
     ymax += pad;
     if(ymin < 0) ymin -= pad;
 
-    const X = x => L + (x/150)*plotW;
+    const X = x => L + (x/xmax)*plotW;
     const Y = y => T + (ymax-y)/(ymax-ymin)*plotH;
 
     const parts = [];
     parts.push(`<rect x="${L}" y="${T}" width="${plotW}" height="${plotH}" fill="#fff" stroke="#dbe3ed"/>`);
 
-    for(let x=0;x<=150;x+=25){
-      const xx=X(x);
+    for(let i=0;i<=6;i++){
+      const xv = xmax*i/6;
+      const xx=X(xv);
       parts.push(`<line x1="${xx}" y1="${T}" x2="${xx}" y2="${H-B}" stroke="#eef2f7"/>`);
-      parts.push(`<text x="${xx}" y="${H-B+24}" text-anchor="middle" font-size="12" fill="#64748b">${x}</text>`);
+      parts.push(`<text x="${xx}" y="${H-B+24}" text-anchor="middle" font-size="12" fill="#64748b">${xv.toFixed(1)}</text>`);
     }
 
-    const tickCount=6;
-    for(let i=0;i<=tickCount;i++){
-      const yv=ymin+(ymax-ymin)*(i/tickCount);
+    for(let i=0;i<=6;i++){
+      const yv=ymin+(ymax-ymin)*(i/6);
       const yy=Y(yv);
       parts.push(`<line x1="${L}" y1="${yy}" x2="${W-R}" y2="${yy}" stroke="#eef2f7"/>`);
       parts.push(`<text x="${L-10}" y="${yy+4}" text-anchor="end" font-size="12" fill="#64748b">${yv.toFixed(1)}</text>`);
@@ -318,23 +319,30 @@ summary{cursor:pointer;font-weight:700;color:var(--accent)}
     parts.push(`<text x="${L+plotW/2}" y="${H-14}" text-anchor="middle" font-size="14" font-weight="600" fill="#334155">σm (MPa)</text>`);
     parts.push(`<text x="18" y="${T+plotH/2}" text-anchor="middle" font-size="14" font-weight="600" fill="#334155" transform="rotate(-90 18 ${T+plotH/2})">σa (MPa)</text>`);
 
-    seriesMeta.forEach((meta, idx) => {
-      const [name,color]=meta;
+    functions.forEach(s => {
       let d="";
       let started=false;
-      rows.forEach(r => {
-        const v=r.values[idx];
-        if(v === null || !Number.isFinite(v)){
+      const steps=600;
+      for(let i=0;i<=steps;i++){
+        const x=s.xmax*i/steps;
+        const y=s.fn(x);
+        if(!Number.isFinite(y)){
           started=false;
-          return;
+          continue;
         }
-        d += `${started ? " L" : " M"} ${X(r.x).toFixed(2)} ${Y(v).toFixed(2)}`;
+        d += `${started ? " L" : " M"} ${X(x).toFixed(2)} ${Y(y).toFixed(2)}`;
         started=true;
-      });
+      }
       if(d){
-        parts.push(`<path d="${d}" fill="none" stroke="${color}" stroke-width="${idx===5?2.4:2.2}" ${idx===5?'stroke-dasharray="7 5"':''} stroke-linecap="round" stroke-linejoin="round"/>`);
+        parts.push(`<path d="${d}" fill="none" stroke="${s.color}" stroke-width="${s.dash?2.4:2.2}" ${s.dash?'stroke-dasharray="7 5"':''} stroke-linecap="round" stroke-linejoin="round"/>`);
       }
     });
+
+    // Current operating point.
+    if(Number.isFinite(p.sm) && Number.isFinite(p.sa) && p.sm >= 0 && p.sm <= xmax){
+      parts.push(`<circle cx="${X(p.sm)}" cy="${Y(p.sa)}" r="5" fill="#111827" stroke="#fff" stroke-width="2"/>`);
+      parts.push(`<text x="${X(p.sm)+9}" y="${Y(p.sa)-9}" font-size="12" font-weight="700" fill="#111827">(${p.sm.toFixed(1)}, ${p.sa.toFixed(1)})</text>`);
+    }
 
     svg.innerHTML=parts.join("");
     $("legend").innerHTML=seriesMeta.map((m,i) =>
